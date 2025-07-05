@@ -6,50 +6,45 @@ const fs = require('fs');
 const app = express();
 const upload = multer({ dest: 'uploads/' });
 
-app.use(express.json());
-
-// Middleware CORS (colocado aquí, después de crear app)
-app.use((req, res, next) => { 
-  res.header("Access-Control-Allow-Origin", "*"); // Cambia * por tu dominio para mayor seguridad
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*"); // Permite cualquier origen (para pruebas)
   res.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.header("Access-Control-Allow-Headers", "Content-Type");
-
-  if (req.method === "OPTIONS") {
-    return res.sendStatus(200);
-  }
-
+  if (req.method === "OPTIONS") return res.sendStatus(200);
   next();
 });
 
-// Ruta para subir varias imágenes (campo "images")
-app.post('/upload', upload.array('images', 20), async (req, res) => {
+app.post('/upload', upload.any(), async (req, res) => {
   try {
-    const images = req.files;
-    if (!images || images.length === 0) {
+    if (!req.files || req.files.length === 0) {
       return res.status(400).json({ error: 'No images uploaded' });
     }
 
-    // Leer buffers de todas las imágenes
-    const buffers = await Promise.all(images.map(file => fs.promises.readFile(file.path)));
+    // Lee los buffers de los archivos recibidos
+    const buffers = await Promise.all(req.files.map(file => fs.promises.readFile(file.path)));
 
-    // Obtener metadatos para saber alturas y anchos
+    // Obtén la altura mínima para escalar todas las imágenes igual
     const metadataArray = await Promise.all(buffers.map(buf => sharp(buf).metadata()));
-
-    // Escalar todas las imágenes a la altura mínima para que queden iguales verticalmente
     const minHeight = Math.min(...metadataArray.map(m => m.height));
 
+    // Redimensiona todas las imágenes a esa altura mínima
     const resizedBuffers = await Promise.all(buffers.map((buf, i) =>
-      sharp(buf)
-        .resize({ height: minHeight })
-        .toBuffer()
+      sharp(buf).resize({ height: minHeight }).toBuffer()
     ));
 
-    // Calcular ancho total
-    const totalWidth = resizedBuffers.reduce((acc, buf, i) => 
-      acc + Math.round(metadataArray[i].width * (minHeight / metadataArray[i].height))
-    , 0);
+    // Calcula ancho total sumando anchos escalados
+    const totalWidth = resizedBuffers.reduce((acc, buf, i) => {
+      return acc + Math.round(metadataArray[i].width * (minHeight / metadataArray[i].height));
+    }, 0);
 
-    // Concatenar imágenes horizontalmente
+    // Une las imágenes horizontalmente
+    let offsetX = 0;
+    const compositeArray = resizedBuffers.map((buf, i) => {
+      const input = { input: buf, left: offsetX, top: 0 };
+      offsetX += Math.round(metadataArray[i].width * (minHeight / metadataArray[i].height));
+      return input;
+    });
+
     const stitchedImage = await sharp({
       create: {
         width: totalWidth,
@@ -57,35 +52,22 @@ app.post('/upload', upload.array('images', 20), async (req, res) => {
         channels: 3,
         background: { r: 0, g: 0, b: 0 }
       }
-    }).composite(
-      resizedBuffers.map((buf, i) => {
-        const offsetX = resizedBuffers
-          .slice(0, i)
-          .reduce((acc, b, idx) => acc + Math.round(metadataArray[idx].width * (minHeight / metadataArray[idx].height)), 0);
-        return { input: buf, left: offsetX, top: 0 };
-      })
-    ).jpeg().toBuffer();
+    })
+    .composite(compositeArray)
+    .jpeg()
+    .toBuffer();
 
-    // Borrar archivos temporales
-    for (const file of images) {
+    // Borra archivos temporales
+    req.files.forEach(file => {
       fs.unlink(file.path, () => {});
-    }
+    });
 
-    // Responder con la imagen panorámica en base64
     res.json({ imageBase64: stitchedImage.toString('base64') });
-
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Error processing images' });
   }
 });
 
-// Ruta de prueba básica
-app.get('/', (req, res) => {
-  res.send('Stitching server running');
-});
-
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
