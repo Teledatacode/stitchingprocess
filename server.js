@@ -4,7 +4,7 @@ const sharp = require('sharp');
 const fs = require('fs');
 
 const app = express();
-const upload = multer({ dest: 'uploads/' });
+const upload = multer().array("images"); // ⬅️ asegúrate de que es "images"
 
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*"); // Permite cualquier origen (para pruebas)
