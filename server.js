@@ -1,73 +1,58 @@
-const express = require('express');
-const multer = require('multer');
-const sharp = require('sharp');
-const fs = require('fs');
+const express = require("express");
+const multer = require("multer");
+const sharp = require("sharp");
+const cors = require("cors");
 
 const app = express();
-const upload = multer().array("images"); // ⬅️ asegúrate de que es "images"
+app.use(cors());
 
-app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*"); // Permite cualquier origen (para pruebas)
-  res.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-  res.header("Access-Control-Allow-Headers", "Content-Type");
-  if (req.method === "OPTIONS") return res.sendStatus(200);
-  next();
-});
+const upload = multer().array("images"); // <-- DEBE COINCIDIR CON "images"
 
-app.post('/upload', upload.any(), async (req, res) => {
+app.post("/upload", upload, async (req, res) => {
   try {
-    if (!req.files || req.files.length === 0) {
-      return res.status(400).json({ error: 'No images uploaded' });
+    const files = req.files;
+
+    if (!files || files.length === 0) {
+      return res.status(400).json({ error: "No se recibieron imágenes." });
     }
 
-    // Lee los buffers de los archivos recibidos
-    const buffers = await Promise.all(req.files.map(file => fs.promises.readFile(file.path)));
+    const resizedBuffers = await Promise.all(
+      files.map(file =>
+        sharp(file.buffer)
+          .resize({ width: 600 })
+          .jpeg()
+          .toBuffer()
+      )
+    );
 
-    // Obtén la altura mínima para escalar todas las imágenes igual
-    const metadataArray = await Promise.all(buffers.map(buf => sharp(buf).metadata()));
-    const minHeight = Math.min(...metadataArray.map(m => m.height));
-
-    // Redimensiona todas las imágenes a esa altura mínima
-    const resizedBuffers = await Promise.all(buffers.map((buf, i) =>
-      sharp(buf).resize({ height: minHeight }).toBuffer()
-    ));
-
-    // Calcula ancho total sumando anchos escalados
-    const totalWidth = resizedBuffers.reduce((acc, buf, i) => {
-      return acc + Math.round(metadataArray[i].width * (minHeight / metadataArray[i].height));
-    }, 0);
-
-    // Une las imágenes horizontalmente
-    let offsetX = 0;
-    const compositeArray = resizedBuffers.map((buf, i) => {
-      const input = { input: buf, left: offsetX, top: 0 };
-      offsetX += Math.round(metadataArray[i].width * (minHeight / metadataArray[i].height));
-      return input;
-    });
-
+    // Concatenar horizontalmente como ejemplo
+    const { width, height } = await sharp(resizedBuffers[0]).metadata();
     const stitchedImage = await sharp({
       create: {
-        width: totalWidth,
-        height: minHeight,
+        width: width * resizedBuffers.length,
+        height,
         channels: 3,
         background: { r: 0, g: 0, b: 0 }
       }
     })
-    .composite(compositeArray)
-    .jpeg()
-    .toBuffer();
+      .composite(resizedBuffers.map((input, i) => ({
+        input,
+        left: i * width,
+        top: 0
+      })))
+      .jpeg()
+      .toBuffer();
 
-    // Borra archivos temporales
-    req.files.forEach(file => {
-      fs.unlink(file.path, () => {});
-    });
+    const base64 = stitchedImage.toString("base64");
+    res.json({ imageBase64: `data:image/jpeg;base64,${base64}` });
 
-    res.json({ imageBase64: stitchedImage.toString('base64') });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Error processing images' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Error interno del servidor." });
   }
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server listening on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Servidor iniciado en puerto ${PORT}`);
+});
