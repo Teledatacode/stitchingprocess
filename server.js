@@ -1,58 +1,74 @@
-const express = require("express");
-const multer = require("multer");
-const sharp = require("sharp");
-const cors = require("cors");
+const express = require('express');
+const multer = require('multer');
+const sharp = require('sharp');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
-app.use(cors());
+const upload = multer({ dest: 'uploads/' });
 
-const upload = multer().array("images"); // <-- DEBE COINCIDIR CON "images"
+app.use(express.json());
 
-app.post("/upload", upload, async (req, res) => {
+// Ruta para subir varias imágenes (form-data con campo "images")
+app.post('/upload', upload.array('images', 20), async (req, res) => {
   try {
-    const files = req.files;
-
-    if (!files || files.length === 0) {
-      return res.status(400).json({ error: "No se recibieron imágenes." });
+    const images = req.files;
+    if (!images || images.length === 0) {
+      return res.status(400).json({ error: 'No images uploaded' });
     }
 
-    const resizedBuffers = await Promise.all(
-      files.map(file =>
-        sharp(file.buffer)
-          .resize({ width: 600 })
-          .jpeg()
-          .toBuffer()
-      )
-    );
+    // Leer buffers de todas las imágenes
+    const buffers = await Promise.all(images.map(file => fs.promises.readFile(file.path)));
 
-    // Concatenar horizontalmente como ejemplo
-    const { width, height } = await sharp(resizedBuffers[0]).metadata();
+    // Obtener metadatos para saber alturas y anchos
+    const metadataArray = await Promise.all(buffers.map(buf => sharp(buf).metadata()));
+
+    // Escalar todas las imágenes a la altura mínima para que queden iguales verticalmente
+    const minHeight = Math.min(...metadataArray.map(m => m.height));
+
+    const resizedBuffers = await Promise.all(buffers.map((buf, i) =>
+      sharp(buf)
+        .resize({ height: minHeight })
+        .toBuffer()
+    ));
+
+    // Concatenar imágenes horizontalmente
     const stitchedImage = await sharp({
       create: {
-        width: width * resizedBuffers.length,
-        height,
+        width: resizedBuffers.reduce((acc, buf, i) => acc + metadataArray[i].width * (minHeight / metadataArray[i].height), 0),
+        height: minHeight,
         channels: 3,
         background: { r: 0, g: 0, b: 0 }
       }
-    })
-      .composite(resizedBuffers.map((input, i) => ({
-        input,
-        left: i * width,
-        top: 0
-      })))
-      .jpeg()
-      .toBuffer();
+    }).composite(
+      resizedBuffers.map((buf, i) => {
+        const offsetX = resizedBuffers
+          .slice(0, i)
+          .reduce((acc, b, idx) => acc + Math.round(metadataArray[idx].width * (minHeight / metadataArray[idx].height)), 0);
+        return { input: buf, left: offsetX, top: 0 };
+      })
+    ).jpeg().toBuffer();
 
-    const base64 = stitchedImage.toString("base64");
-    res.json({ imageBase64: `data:image/jpeg;base64,${base64}` });
+    // Borrar archivos temporales
+    for (const file of images) {
+      fs.unlink(file.path, () => {});
+    }
 
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: "Error interno del servidor." });
+    // Responder con la imagen panorámica en base64
+    res.json({ imageBase64: stitchedImage.toString('base64') });
+
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Error processing images' });
   }
+});
+
+// Servir frontend o página simple
+app.get('/', (req, res) => {
+  res.send('Stitching server running');
 });
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Servidor iniciado en puerto ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
