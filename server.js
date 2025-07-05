@@ -1,74 +1,63 @@
-const express = require('express');
-const multer = require('multer');
-const sharp = require('sharp');
-const fs = require('fs');
-const path = require('path');
-
+const express = require("express");
+const multer = require("multer");
+const sharp = require("sharp");
+const cors = require("cors");
 const app = express();
-const upload = multer({ dest: 'uploads/' });
+const port = process.env.PORT || 3000;
 
-app.use(express.json());
+// Habilita CORS para que pueda recibir peticiones desde cualquier origen
+app.use(cors());
 
-// Ruta para subir varias imágenes (form-data con campo "images")
-app.post('/upload', upload.array('images', 20), async (req, res) => {
+// Configura multer para recibir múltiples imágenes
+const storage = multer.memoryStorage();
+const upload = multer({ storage: storage });
+
+app.get("/", (req, res) => {
+  res.send("Servidor de stitching activo");
+});
+
+app.post("/upload", upload.array("images", 100), async (req, res) => {
   try {
-    const images = req.files;
-    if (!images || images.length === 0) {
-      return res.status(400).json({ error: 'No images uploaded' });
+    const files = req.files;
+    if (!files || files.length === 0) {
+      return res.status(400).json({ error: "No se recibieron imágenes." });
     }
 
-    // Leer buffers de todas las imágenes
-    const buffers = await Promise.all(images.map(file => fs.promises.readFile(file.path)));
+    // Ordena las imágenes por el nombre (photo0.jpg, photo1.jpg, etc.)
+    files.sort((a, b) => a.originalname.localeCompare(b.originalname));
 
-    // Obtener metadatos para saber alturas y anchos
-    const metadataArray = await Promise.all(buffers.map(buf => sharp(buf).metadata()));
+    // Convierte los buffers en imágenes Sharp
+    const sharpImages = await Promise.all(
+      files.map((file) => sharp(file.buffer).resize({ width: 512 }).toBuffer())
+    );
 
-    // Escalar todas las imágenes a la altura mínima para que queden iguales verticalmente
-    const minHeight = Math.min(...metadataArray.map(m => m.height));
-
-    const resizedBuffers = await Promise.all(buffers.map((buf, i) =>
-      sharp(buf)
-        .resize({ height: minHeight })
-        .toBuffer()
-    ));
-
-    // Concatenar imágenes horizontalmente
-    const stitchedImage = await sharp({
+    // Une horizontalmente como prototipo simple
+    const composite = sharp({
       create: {
-        width: resizedBuffers.reduce((acc, buf, i) => acc + metadataArray[i].width * (minHeight / metadataArray[i].height), 0),
-        height: minHeight,
+        width: 512 * sharpImages.length,
+        height: 512,
         channels: 3,
         background: { r: 0, g: 0, b: 0 }
       }
-    }).composite(
-      resizedBuffers.map((buf, i) => {
-        const offsetX = resizedBuffers
-          .slice(0, i)
-          .reduce((acc, b, idx) => acc + Math.round(metadataArray[idx].width * (minHeight / metadataArray[idx].height)), 0);
-        return { input: buf, left: offsetX, top: 0 };
-      })
-    ).jpeg().toBuffer();
+    });
 
-    // Borrar archivos temporales
-    for (const file of images) {
-      fs.unlink(file.path, () => {});
-    }
+    let left = 0;
+    const composites = sharpImages.map((imgBuf) => {
+      const position = { input: imgBuf, top: 0, left };
+      left += 512;
+      return position;
+    });
 
-    // Responder con la imagen panorámica en base64
-    res.json({ imageBase64: stitchedImage.toString('base64') });
+    const finalBuffer = await composite.composite(composites).jpeg().toBuffer();
+    const base64 = finalBuffer.toString("base64");
 
+    res.json({ imageBase64: base64 });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Error processing images' });
+    console.error("Error en /upload:", err);
+    res.status(500).json({ error: "Error procesando las imágenes." });
   }
 });
 
-// Servir frontend o página simple
-app.get('/', (req, res) => {
-  res.send('Stitching server running');
-});
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+app.listen(port, () => {
+  console.log(`Servidor escuchando en puerto ${port}`);
 });
