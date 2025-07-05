@@ -1,5 +1,16 @@
-app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*"); // Cambia * por tu dominio si quieres más seguridad
+const express = require('express');
+const multer = require('multer');
+const sharp = require('sharp');
+const fs = require('fs');
+
+const app = express();
+const upload = multer({ dest: 'uploads/' });
+
+app.use(express.json());
+
+// Middleware CORS (colocado aquí, después de crear app)
+app.use((req, res, next) => { 
+  res.header("Access-Control-Allow-Origin", "*"); // Cambia * por tu dominio para mayor seguridad
   res.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.header("Access-Control-Allow-Headers", "Content-Type");
 
@@ -10,19 +21,7 @@ app.use((req, res, next) => {
   next();
 });
 
-
-const express = require('express');
-const multer = require('multer');
-const sharp = require('sharp');
-const fs = require('fs');
-const path = require('path');
-
-const app = express();
-const upload = multer({ dest: 'uploads/' });
-
-app.use(express.json());
-
-// Ruta para subir varias imágenes (form-data con campo "images")
+// Ruta para subir varias imágenes (campo "images")
 app.post('/upload', upload.array('images', 20), async (req, res) => {
   try {
     const images = req.files;
@@ -45,10 +44,15 @@ app.post('/upload', upload.array('images', 20), async (req, res) => {
         .toBuffer()
     ));
 
+    // Calcular ancho total
+    const totalWidth = resizedBuffers.reduce((acc, buf, i) => 
+      acc + Math.round(metadataArray[i].width * (minHeight / metadataArray[i].height))
+    , 0);
+
     // Concatenar imágenes horizontalmente
     const stitchedImage = await sharp({
       create: {
-        width: resizedBuffers.reduce((acc, buf, i) => acc + metadataArray[i].width * (minHeight / metadataArray[i].height), 0),
+        width: totalWidth,
         height: minHeight,
         channels: 3,
         background: { r: 0, g: 0, b: 0 }
@@ -76,7 +80,7 @@ app.post('/upload', upload.array('images', 20), async (req, res) => {
   }
 });
 
-// Servir frontend o página simple
+// Ruta de prueba básica
 app.get('/', (req, res) => {
   res.send('Stitching server running');
 });
