@@ -1,3 +1,16 @@
+app.use((req, res, next) => {
+  res.header("Access-Control-Allow-Origin", "*"); // Cambia * por tu dominio si quieres más seguridad
+  res.header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+  res.header("Access-Control-Allow-Headers", "Content-Type");
+
+  if (req.method === "OPTIONS") {
+    return res.sendStatus(200);
+  }
+
+  next();
+});
+
+
 const express = require('express');
 const multer = require('multer');
 const sharp = require('sharp');
